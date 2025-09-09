@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Painel Férias</title>
+        <link rel="stylesheet" href="style.css">
+    </head>
+    <body>
+        <div class="chart-container">
+            <h2>Painel Férias</h2>
+
+            <span id="resetHoje">Hoje</span>
+            <div id="busca-container">
+                <input type="text" id="buscarData" placeholder="dd/mm/aa">
+                <button id="pesquisarData">Pesquisar</button>
+            </div>
+            <canvas id="painelFerias"></canvas>
+        </div>
+
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
+        <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom"></script>
+
+        <script>
+            Chart.register(ChartZoom);
+
+            //Paleta de cores para o gráfico
+            const paletaGrafico = ['#D1D7BB','#C1CAA9','#6E853D','#879E54','#9FB66B','#B8CF82','#D0E799','#E0E4CD'];
+            const corLinhaMes = '#E0E4CD';
+
+            //Link da planilha com os dados
+            const URL_CSV = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTtSwHX50y5_kZGyHwifM4Qq3nYBrvBOxM5ZwlCsZGOMzGJnjW-BnNf8LH0CNRaCbltQZoMbBQNPmCU/pub?gid=0&single=true&output=csv";
+
+            //Constantes importantes
+            const anoAtual = new Date().getFullYear();
+            const hoje = new Date();
+            hoje.setHours(0,0,0,0);
+            const primeiroDiaMesAtual = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
+            const ultimoDiaMesAtual = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0);
+            
+            //Limites do gráfico
+            //Somente ano atual
+            const inicioPainel = new Date(anoAtual, 0, 1);
+            const fimPainel = new Date(anoAtual, 11, 31);
+            //Ano passado, ano atual e próximo ano
+            /*const inicioPainel = new Date(anoAtual - 1, 0, 1);
+            const fimPainel = new Date(anoAtual + 1, 11, 31);*/
+
+            //Janela inicial (mês atual)
+            let inicioJanelaX = primeiroDiaMesAtual.getTime();
+            let terminoJanelaX = ultimoDiaMesAtual.getTime();
+            let inicioJanelaY;
+            let terminoJanelaY;
+
+            //Função para deixar a data "limpa"
+            function parseDateLocal(dateStr) {
+                const parts = String(dateStr).trim().split('-').map(Number);
+                if (parts.length >= 3) {
+                    return new Date(parts[0], parts[1] - 1, parts[2]);
+                } else {
+                    const d = new Date(dateStr);
+                    return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+                }
+            }
+
+            //Detaque dia atual
+            const destaqueHoje = {
+                id: 'destaqueHoje',
+                afterDraw(chart) {
+                    const xScale = chart.scales?.x;
+                    if (!xScale) return;
+                    const ctx = chart.ctx;
+                    const area = chart.chartArea;
+                 
+                    const hojeStart = new Date(hoje.getTime());
+                    const hojeEnd = new Date(hoje.getTime()); 
+                    hojeEnd.setHours(23,59,59,999);
+
+                    const bounds = xScale.getUserBounds();
+                    const visMin = bounds.min;
+                    const visMax = bounds.max;
+                    if (hojeEnd.getTime() < visMin || hojeStart.getTime() > visMax) return;
+
+                    const left = Math.max(area.left, xScale.getPixelForValue(hojeStart));
+                    const right = Math.min(area.right, xScale.getPixelForValue(hojeEnd));
+                    if (right <= left) return;
+
+                    ctx.save();
+                    ctx.fillStyle = 'rgba(159,182,107,0.12)'; //cor do destaque
+                    ctx.fillRect(left, area.top, right - left, area.bottom - area.top);
+                    ctx.restore();
+                }
+            };
+            Chart.register(destaqueHoje);
+
+            //Função que destaca a linha do início do mês
+            function getTickDate(ctx) {
+                return new Date(ctx?.tick?.value);
+            }
+            function isPrimeiroDiaMes(ctx) {
+                const d = getTickDate(ctx);
+                return !isNaN(d) && d.getDate() === 1;
+            }
+            
+            //Obtém, processa e formata e mostra os dados da planilha
+            fetch(URL_CSV)
+            .then(r => r.text())
+            .then(texto => {
+                const linhas = texto.trim().split("\n").map(l => l.split(","));
+                const [cabecalho, ...dados] = linhas;
+
+                const dadosMultiDia = [];
+                const dadosUmDia = [];
+                const nomesFunc = new Set();
+
+                dados.forEach((l) => {
+                    const [nome, inicioStr, fimStr, descricao] = l.map(s => s?.trim?.() ?? '');
+                    if (!nome) return;
+                    nomesFunc.add(nome);
+
+                    const dataInicio = parseDateLocal(inicioStr);
+                    const dataFim = parseDateLocal(fimStr);
+
+                    //Se for evento de 1 dia: coloca ponto ao meio-dia
+                    if (dataInicio.getFullYear() === dataFim.getFullYear() &&
+                        dataInicio.getMonth() === dataFim.getMonth() &&
+                        dataInicio.getDate() === dataFim.getDate()) {
+                        const pontoMeioDia = new Date(dataInicio.getFullYear(), dataInicio.getMonth(), dataInicio.getDate(), 12, 0, 0, 0);
+                        dadosUmDia.push({ y: nome, x: pontoMeioDia, description: descricao });
+                    } else {
+                    //Se for evento multi-dia: ajusta o fim da data para o final do último dia
+                        const finalDia = new Date(dataFim.getFullYear(), dataFim.getMonth(), dataFim.getDate() + 1);
+                        finalDia.setMilliseconds(finalDia.getMilliseconds() - 1);
+                        dadosMultiDia.push({ y: nome, x: [dataInicio, finalDia], description: descricao });
+                    }
+                });
+
+                const labelsDoEixoY = Array.from(nomesFunc);
+
+                const canvas = document.getElementById('painelFerias');
+                const ctx = canvas.getContext('2d');
+
+                inicioJanelaY = 0;
+                terminoJanelaY = Math.min( labelsDoEixoY.length - 1, 14 );
+
+                //Faz o desenho do gráfico
+                const chart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        datasets: [{
+                            label: 'Férias',
+                            data: dadosMultiDia,
+                            backgroundColor: dadosMultiDia.map((_, i) => paletaGrafico[i % paletaGrafico.length]),
+                            borderSkipped: false,
+                            borderRadius: 8,
+                            type: 'bar'
+                        }, {
+                            label: 'Datas Limites',
+                            data: dadosUmDia,
+                            pointBackgroundColor: dadosUmDia.map((_, i) => paletaGrafico[i % paletaGrafico.length]),
+                            borderSkipped: false,
+                            pointRadius: 14,
+                            type: 'scatter',
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        layout: { padding: { bottom: 60 } },
+                        indexAxis: 'y',
+                        scales: {
+                            x: {
+                                type: 'time',
+                                time: { unit: 'day' },
+                                min: new Date(inicioJanelaX),
+                                max: new Date(terminoJanelaX),
+                                grid: { 
+                                    display: true, 
+                                    color: (ctx) => {
+                                        if (isPrimeiroDiaMes(ctx)) return corLinhaMes;
+                                        return undefined;
+                                    },
+                                    lineWidth: (ctx) => (isPrimeiroDiaMes(ctx)) ? 2 : 1,
+                                },
+                                ticks: {
+                                    autoSkip: true,
+                                    maxRotation: 0, 
+                                    //Arrumar como diferencias os dias/meses/anos
+                                    /*callback: function(value) {
+                                        const data = new Date(value);
+                                        const bounds = this.getUserBounds();
+                                        const minD = new Date(bounds.min);
+                                        const maxD = new Date(bounds.max);
+                                        const mostrarMesAno = (minD.getMonth() !== maxD.getMonth()) || (minD.getFullYear() !== maxD.getFullYear());
+                                        return mostrarMesAno ? `${String(data.getDate()).padStart(2,'0')}/${String(data.getMonth()+1).padStart(2,'0')}` : `${String(data.getDate()).padStart(2,'0')}`;
+                                    }*/
+                                }
+                            },
+                            y: {
+                                type: 'category',
+                                labels: labelsDoEixoY,
+                                grid: { display: true },
+                                min: inicioJanelaY,
+                                max: terminoJanelaY 
+                            }
+                        },
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                displayColors: false, //Remove os quadrados coloridos
+                                backgroundColor: 'green',
+                                callbacks: {
+                                    label: function(context) {
+                                        const d = context.dataset.data[context.dataIndex];
+                                        if (context.dataset.type === 'bar') {
+                                            const inicio = new Date(d.x[0]);
+                                            const fim = new Date(d.x[1]);
+                                            return [
+                                                d.description.toUpperCase(), //Fazer sair o nome 
+                                                `De: ${inicio.toLocaleDateString('pt-BR')}`,
+                                                `Até: ${fim.toLocaleDateString('pt-BR')}`
+                                            ];
+                                        } else {
+                                            const data = new Date(d.x);
+                                            return [
+                                                d.description, 
+                                                `Em: ${data.toLocaleDateString('pt-BR')}`
+                                            ];
+                                        }
+                                    }
+                                }
+                            },
+                            zoom: {
+                                pan: {
+                                    enabled: true,
+                                    mode: 'xy',
+                                    modifierKey: null 
+                                },
+                                zoom: {
+                                    wheel: { enabled: true },
+                                    pinch: { enabled: true },
+                                    mode: 'xy'
+                                },
+                                limits: {
+                                    x: { min: inicioPainel.getTime(), max: fimPainel.getTime() },
+                                    y: { min: 0, max: Math.max(0, labelsDoEixoY.length - 1) }
+                                }
+                            }
+                        }
+                    }
+                });
+
+                // Botão para buscar data
+                document.getElementById("esquisarData").addEventListener("click", () => {
+                    const valor = document.getElementById("buscarData").value.trim();
+                    if (!valor) return;
+
+                    const partes = valor.split("/");
+                    if (partes.length < 3) {
+                        alert("Formato esperado: dd/mm/aa");
+                        return;
+                    }
+
+                    const [dia, mes, ano] = partes.map(Number);
+                    const dataBusca = new Date(2000 + ano, mes - 1, dia);
+                    if (isNaN(dataBusca)) {
+                        alert("Data inválida");
+                        return;
+                    }
+
+                    const janela = 7;
+                    const inicio = new Date(dataBusca);
+                    inicio.setDate(inicio.getDate() - janela);
+                    const fim = new Date(dataBusca);
+                    fim.setDate(fim.getDate() + janela);
+
+                    chart.options.scales.x.min = inicio.getTime();
+                    chart.options.scales.x.max = fim.getTime();
+                    chart.update();
+                });
+
+                //Faz o botão Hoje retornar para a janela inicial
+                document.getElementById("resetHoje").addEventListener("click", () => {
+                    chart.resetZoom();
+                    chart.options.scales.x.min = inicioJanelaX;
+                    chart.options.scales.x.max = terminoJanelaX;
+                    chart.options.scales.y.min = inicioJanelaY
+                    chart.options.scales.y.max = terminoJanelaY
+                    chart.update();
+                });
+            });
+        </script>
+    </body>
+</html>
